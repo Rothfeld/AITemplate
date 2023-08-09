@@ -37,6 +37,7 @@ class Upsample2D(nn.Module):
         use_conv_transpose=False,
         out_channels=None,
         name="conv",
+        dtype="float16",
     ):
         super().__init__()
         self.channels = channels
@@ -47,9 +48,11 @@ class Upsample2D(nn.Module):
 
         conv = None
         if use_conv_transpose:
-            conv = nn.ConvTranspose2dBias(channels, self.out_channels, 4, 2, 1)
+            conv = nn.ConvTranspose2dBias(
+                channels, self.out_channels, 4, 2, 1, dtype=dtype
+            )
         elif use_conv:
-            conv = nn.Conv2dBias(self.channels, self.out_channels, 3, 1, 1)
+            conv = nn.Conv2dBias(self.channels, self.out_channels, 3, 1, 1, dtype=dtype)
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
         if name == "conv":
@@ -89,7 +92,13 @@ class Downsample2D(nn.Module):
     """
 
     def __init__(
-        self, channels, use_conv=False, out_channels=None, padding=1, name="conv"
+        self,
+        channels,
+        use_conv=False,
+        out_channels=None,
+        padding=1,
+        name="conv",
+        dtype="float16",
     ):
         super().__init__()
         self.channels = channels
@@ -98,10 +107,16 @@ class Downsample2D(nn.Module):
         self.padding = padding
         stride = 2
         self.name = name
+        self.dtype = dtype
 
         if use_conv:
             conv = nn.Conv2dBias(
-                self.channels, self.out_channels, 3, stride=stride, padding=padding
+                self.channels,
+                self.out_channels,
+                3,
+                stride=stride,
+                dtype=dtype,
+                padding=padding,
             )
         else:
             assert self.channels == self.out_channels
@@ -116,9 +131,21 @@ class Downsample2D(nn.Module):
         else:
             self.conv = conv
 
-    def forward(self, x):
-        x = self.conv(x)
-        return x
+    def forward(self, hidden_states):
+        if self.use_conv and self.padding == 0:
+            padding = ops.full()([0, 1, 0, 0], 0.0, dtype=self.dtype)
+            padding._attrs["shape"][0] = hidden_states._attrs["shape"][0]
+            padding._attrs["shape"][2] = hidden_states._attrs["shape"][2]
+            padding._attrs["shape"][3] = hidden_states._attrs["shape"][3]
+            hidden_states = ops.concatenate()([hidden_states, padding], dim=1)
+            padding = ops.full()([0, 0, 1, 0], 0.0, dtype=self.dtype)
+            padding._attrs["shape"][0] = hidden_states._attrs["shape"][0]
+            padding._attrs["shape"][1] = hidden_states._attrs["shape"][1]
+            padding._attrs["shape"][3] = hidden_states._attrs["shape"][3]
+            hidden_states = ops.concatenate()([hidden_states, padding], dim=2)
+
+        hidden_states = self.conv(hidden_states)
+        return hidden_states
 
 
 class ResnetBlock2D(nn.Module):
@@ -141,6 +168,7 @@ class ResnetBlock2D(nn.Module):
         use_nin_shortcut=None,
         up=False,
         down=False,
+        dtype="float16"
     ):
         super().__init__()
         self.pre_norm = pre_norm
@@ -163,14 +191,15 @@ class ResnetBlock2D(nn.Module):
             eps=eps,
             affine=True,
             use_swish=True,
+            dtype=dtype,
         )
 
         self.conv1 = nn.Conv2dBias(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, dtype=dtype
         )
 
         if temb_channels is not None:
-            self.time_emb_proj = nn.Linear(temb_channels, out_channels)
+            self.time_emb_proj = nn.Linear(temb_channels, out_channels, dtype=dtype)
         else:
             self.time_emb_proj = None
 
@@ -180,10 +209,11 @@ class ResnetBlock2D(nn.Module):
             eps=eps,
             affine=True,
             use_swish=True,
+            dtype=dtype,
         )
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout, dtype=dtype)
         self.conv2 = nn.Conv2dBias(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, dtype=dtype
         )
 
         self.upsample = self.downsample = None
@@ -196,7 +226,7 @@ class ResnetBlock2D(nn.Module):
 
         if self.use_nin_shortcut:
             self.conv_shortcut = nn.Conv2dBias(
-                in_channels, out_channels, 1, 1, 0
+                in_channels, out_channels, 1, 1, 0, dtype=dtype
             )  # kernel_size=1, stride=1, padding=0) # conv_bias_add
         else:
             self.conv_shortcut = None

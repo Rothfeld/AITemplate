@@ -18,7 +18,7 @@ from aitemplate.compiler import ops
 from aitemplate.frontend import nn
 
 from .embeddings import TimestepEmbedding, Timesteps
-from .unet_blocks import get_down_block, get_up_block, UNetMidBlock2DCrossAttn
+from .unet_blocks import get_down_block, UNetMidBlock2DCrossAttn
 
 
 class ControlNetConditioningEmbedding(nn.Module):
@@ -192,6 +192,9 @@ class ControlNetModel(nn.Module):
             upcast_attention=upcast_attention,
         )
 
+    def get_shape(self, sample):
+        return [i._attrs["int_var"]._attrs["values"][0] for i in ops.size()(sample)]
+
     def forward(
         self,
         sample,
@@ -207,7 +210,7 @@ class ControlNetModel(nn.Module):
         sample = self.conv_in(sample)
 
         controlnet_cond = self.controlnet_cond_embedding(controlnet_cond)
-
+        controlnet_cond._attrs["shape"] = sample._attrs["shape"]
         sample = sample + controlnet_cond
         # 3. down
         down_block_res_samples = (sample,)  # up to but excluding last element
@@ -249,7 +252,6 @@ class ControlNetModel(nn.Module):
         ]
         mid_block_res_sample = mid_block_res_sample * conditioning_scale
 
-        # return (down_block_res_samples, mid_block_res_sample)
         return (
             down_block_res_samples[0],
             down_block_res_samples[1],
