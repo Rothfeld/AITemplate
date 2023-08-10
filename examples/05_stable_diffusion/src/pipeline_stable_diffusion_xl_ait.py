@@ -165,10 +165,14 @@ class StableDiffusionXLAITPipeline(
         self.timestep_exe = Model(timestep_module_path)
 
     def apply_vae(self):
+        if self.vae_exe is not None:
+            return
         self.vae_exe = Model(self.vae_module_path)
         self.vae_exe.set_many_constants_with_tensors(map_vae(self.vae))
 
     def apply_clip(self):
+        if self.text_encoder_exe is not None:
+            return
         self.text_encoder_exe = Model(self.text_encoder_module_path)
         self.text_encoder_exe.nlayers = [
             x for x in range(0, self.text_encoder.config.num_hidden_layers)
@@ -185,6 +189,8 @@ class StableDiffusionXLAITPipeline(
         )
 
     def apply_unet(self):
+        if self.unet_exe is not None:
+            return
         self.unet_exe = Model(self.unet_module_path)
         self.unet_exe.set_many_constants_with_tensors(map_unet(self.unet))
 
@@ -592,6 +598,8 @@ class StableDiffusionXLAITPipeline(
         original_size: Optional[Tuple[int, int]] = None,
         crops_coords_top_left: Tuple[int, int] = (0, 0),
         target_size: Optional[Tuple[int, int]] = None,
+        _unload_modules: bool = True,
+        _callback = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -744,7 +752,8 @@ class StableDiffusionXLAITPipeline(
             negative_prompt_2=negative_prompt_2,
         )
 
-        self.unload_clip()
+        if _unload_modules:
+            self.unload_clip()
 
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps)
@@ -852,9 +861,13 @@ class StableDiffusionXLAITPipeline(
                     )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(
-                    noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-                )[0]
+                xx = self.scheduler.step(
+                    noise_pred, t, latents, **extra_step_kwargs, return_dict=True
+                )
+                if _callback:
+                    _callback(xx)
+                # return EulerDiscreteSchedulerOutput(prev_sample=prev_sample, pred_original_sample=pred_original_sample)
+                latents = xx.prev_sample
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or (
@@ -864,7 +877,8 @@ class StableDiffusionXLAITPipeline(
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
-        self.unload_unet()
+        if _unload_modules:
+            self.unload_unet()
 
         self.apply_vae()
 
@@ -872,7 +886,8 @@ class StableDiffusionXLAITPipeline(
             image = vae_decode_inference(
                 self.vae_exe, latents / self.vae.config.scaling_factor, to_cpu=True
             )["pixels"]
-            self.unload_vae()
+            if _unload_modules:
+                self.unload_vae()
         else:
             image = latents
             return StableDiffusionXLPipelineOutput(images=image)
@@ -881,6 +896,7 @@ class StableDiffusionXLAITPipeline(
         if self.watermark is not None:
             image = self.watermark.apply_watermark(image)
 
+        image = image.to(dtype=torch.float32)
         image = self.image_processor.postprocess(image, output_type=output_type)
 
         if not return_dict:
